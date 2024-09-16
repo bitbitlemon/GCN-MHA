@@ -10,14 +10,22 @@ from torch_geometric.data import DataLoader
 from tqdm import tqdm
 from Process.rand5fold import *
 from tools.evaluate import *
-from torch_geometric.nn import GCNConv
+from torch_geometric.nn import GCNConv, GraphSAGE, GATConv  # 引入其他GNN层
 import copy
 
+# 定义TD方向的GNN
 class TDrumorGCN(th.nn.Module):
-    def __init__(self, in_feats, hid_feats, out_feats):
+    def __init__(self, in_feats, hid_feats, out_feats, gnn_type='GCN'):
         super(TDrumorGCN, self).__init__()
-        self.conv1 = GCNConv(in_feats, hid_feats)
-        self.conv2 = GCNConv(hid_feats + in_feats, out_feats)
+        if gnn_type == 'GCN':
+            self.conv1 = GCNConv(in_feats, hid_feats)
+            self.conv2 = GCNConv(hid_feats + in_feats, out_feats)
+        elif gnn_type == 'GraphSAGE':
+            self.conv1 = GraphSAGE(in_feats, hid_feats)
+            self.conv2 = GraphSAGE(hid_feats + in_feats, out_feats)
+        elif gnn_type == 'GAT':
+            self.conv1 = GATConv(in_feats, hid_feats, heads=8, concat=False)
+            self.conv2 = GATConv(hid_feats + in_feats, out_feats, heads=8, concat=False)
 
     def forward(self, data):
         x, edge_index = data.x, data.edge_index
@@ -45,11 +53,19 @@ class TDrumorGCN(th.nn.Module):
 
         return x
 
+# 定义BU方向的GNN
 class BUrumorGCN(th.nn.Module):
-    def __init__(self, in_feats, hid_feats, out_feats):
+    def __init__(self, in_feats, hid_feats, out_feats, gnn_type='GCN'):
         super(BUrumorGCN, self).__init__()
-        self.conv1 = GCNConv(in_feats, hid_feats)
-        self.conv2 = GCNConv(hid_feats + in_feats, out_feats)
+        if gnn_type == 'GCN':
+            self.conv1 = GCNConv(in_feats, hid_feats)
+            self.conv2 = GCNConv(hid_feats + in_feats, out_feats)
+        elif gnn_type == 'GraphSAGE':
+            self.conv1 = GraphSAGE(in_feats, hid_feats)
+            self.conv2 = GraphSAGE(hid_feats + in_feats, out_feats)
+        elif gnn_type == 'GAT':
+            self.conv1 = GATConv(in_feats, hid_feats, heads=8, concat=False)
+            self.conv2 = GATConv(hid_feats + in_feats, out_feats, heads=8, concat=False)
 
     def forward(self, data):
         x, edge_index = data.x, data.BU_edge_index
@@ -78,11 +94,12 @@ class BUrumorGCN(th.nn.Module):
 
         return x
 
+# 整合TD和BU的网络
 class Net(th.nn.Module):
-    def __init__(self, in_feats, hid_feats, out_feats):
+    def __init__(self, in_feats, hid_feats, out_feats, gnn_type='GCN'):
         super(Net, self).__init__()
-        self.TDrumorGCN = TDrumorGCN(in_feats, hid_feats, out_feats)
-        self.BUrumorGCN = BUrumorGCN(in_feats, hid_feats, out_feats)
+        self.TDrumorGCN = TDrumorGCN(in_feats, hid_feats, out_feats, gnn_type)
+        self.BUrumorGCN = BUrumorGCN(in_feats, hid_feats, out_feats, gnn_type)
         self.fc = th.nn.Linear((out_feats + hid_feats) * 2, 4)
 
     def forward(self, data):
@@ -99,8 +116,8 @@ batch_train_accs = []
 batch_val_losses = []
 batch_val_accs = []
 
-def train_GCN(treeDic, x_test, x_train, TDdroprate, BUdroprate, lr, weight_decay, patience, n_epochs, batchsize, dataname, iter):
-    model = Net(5000, 64, 64).to(device)
+def train_GCN(treeDic, x_test, x_train, TDdroprate, BUdroprate, lr, weight_decay, patience, n_epochs, batchsize, dataname, iter, gnn_type='GCN'):
+    model = Net(5000, 64, 64, gnn_type).to(device)
     BU_params = list(map(id, model.BUrumorGCN.conv1.parameters()))
     BU_params += list(map(id, model.BUrumorGCN.conv2.parameters()))
     base_params = filter(lambda p: id(p) not in BU_params, model.parameters())
@@ -189,6 +206,7 @@ def train_GCN(treeDic, x_test, x_train, TDdroprate, BUdroprate, lr, weight_decay
 
     return train_losses, val_losses, train_accs, val_accs
 
+# 设置训练参数
 lr = 0.0005
 weight_decay = 1e-4
 patience = 10
@@ -198,6 +216,7 @@ TDdroprate = 0.2
 BUdroprate = 0.2
 datasetname = sys.argv[1]  # "Twitter15" or "Twitter16"
 iterations = int(sys.argv[2])
+gnn_type = sys.argv[3]  # "GCN", "GraphSAGE" or "GAT"
 model = "GCN"
 device = th.device('cpu')
 test_accs = []
@@ -216,19 +235,19 @@ for iter in range(iterations):
     treeDic = loadTree(datasetname)
     
     train_losses, val_losses, train_accs, val_accs0, accs0, F1_0, F2_0, F3_0, F4_0 = train_GCN(
-        treeDic, fold0_x_test, fold0_x_train, TDdroprate, BUdroprate, lr, weight_decay, patience, n_epochs, batchsize, datasetname, iter)
+        treeDic, fold0_x_test, fold0_x_train, TDdroprate, BUdroprate, lr, weight_decay, patience, n_epochs, batchsize, datasetname, iter, gnn_type)
     
     train_losses, val_losses, train_accs, val_accs1, accs1, F1_1, F2_1, F3_1, F4_1 = train_GCN(
-        treeDic, fold1_x_test, fold1_x_train, TDdroprate, BUdroprate, lr, weight_decay, patience, n_epochs, batchsize, datasetname, iter)
+        treeDic, fold1_x_test, fold1_x_train, TDdroprate, BUdroprate, lr, weight_decay, patience, n_epochs, batchsize, datasetname, iter, gnn_type)
     
     train_losses, val_losses, train_accs, val_accs2, accs2, F1_2, F2_2, F3_2, F4_2 = train_GCN(
-        treeDic, fold2_x_test, fold2_x_train, TDdroprate, BUdroprate, lr, weight_decay, patience, n_epochs, batchsize, datasetname, iter)
+        treeDic, fold2_x_test, fold2_x_train, TDdroprate, BUdroprate, lr, weight_decay, patience, n_epochs, batchsize, datasetname, iter, gnn_type)
     
     train_losses, val_losses, train_accs, val_accs3, accs3, F1_3, F2_3, F3_3, F4_3 = train_GCN(
-        treeDic, fold3_x_test, fold3_x_train, TDdroprate, BUdroprate, lr, weight_decay, patience, n_epochs, batchsize, datasetname, iter)
+        treeDic, fold3_x_test, fold3_x_train, TDdroprate, BUdroprate, lr, weight_decay, patience, n_epochs, batchsize, datasetname, iter, gnn_type)
     
     train_losses, val_losses, train_accs, val_accs4, accs4, F1_4, F2_4, F3_4, F4_4 = train_GCN(
-        treeDic, fold4_x_test, fold4_x_train, TDdroprate, BUdroprate, lr, weight_decay, patience, n_epochs, batchsize, datasetname, iter)
+        treeDic, fold4_x_test, fold4_x_train, TDdroprate, BUdroprate, lr, weight_decay, patience, n_epochs, batchsize, datasetname, iter, gnn_type)
     
     test_accs.append((accs0 + accs1 + accs2 + accs3 + accs4) / 5)
     NR_F1.append((F1_0 + F1_1 + F1_2 + F1_3 + F1_4) / 5)

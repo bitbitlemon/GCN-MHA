@@ -21,14 +21,14 @@ class TDrumorGCN(th.nn.Module):
 
     def forward(self, data):
         x, edge_index = data.x, data.edge_index
-        x1 = copy.copy(x.float())
+        x1 = x.float().clone()
         x = self.conv1(x, edge_index)
-        x2 = copy.copy(x)
+        x2 = x.clone()
         rootindex = data.rootindex
         root_extend = th.zeros(len(data.batch), x1.size(1)).to(device)
         batch_size = max(data.batch) + 1
         for num_batch in range(batch_size):
-            index = (th.eq(data.batch, num_batch))
+            index = (data.batch == num_batch)
             root_extend[index] = x1[rootindex[num_batch]]
         x = th.cat((x, root_extend), 1)
 
@@ -38,7 +38,7 @@ class TDrumorGCN(th.nn.Module):
         x = F.relu(x)
         root_extend = th.zeros(len(data.batch), x2.size(1)).to(device)
         for num_batch in range(batch_size):
-            index = (th.eq(data.batch, num_batch))
+            index = (data.batch == num_batch)
             root_extend[index] = x2[rootindex[num_batch]]
         x = th.cat((x, root_extend), 1)
         x = scatter_mean(x, data.batch, dim=0)
@@ -53,15 +53,15 @@ class BUrumorGCN(th.nn.Module):
 
     def forward(self, data):
         x, edge_index = data.x, data.BU_edge_index
-        x1 = copy.copy(x.float())
+        x1 = x.float().clone()
         x = self.conv1(x, edge_index)
-        x2 = copy.copy(x)
+        x2 = x.clone()
 
         rootindex = data.rootindex
         root_extend = th.zeros(len(data.batch), x1.size(1)).to(device)
         batch_size = max(data.batch) + 1
         for num_batch in range(batch_size):
-            index = (th.eq(data.batch, num_batch))
+            index = (data.batch == num_batch)
             root_extend[index] = x1[rootindex[num_batch]]
         x = th.cat((x, root_extend), 1)
 
@@ -71,7 +71,7 @@ class BUrumorGCN(th.nn.Module):
         x = F.relu(x)
         root_extend = th.zeros(len(data.batch), x2.size(1)).to(device)
         for num_batch in range(batch_size):
-            index = (th.eq(data.batch, num_batch))
+            index = (data.batch == num_batch)
             root_extend[index] = x2[rootindex[num_batch]]
         x = th.cat((x, root_extend), 1)
         x = scatter_mean(x, data.batch, dim=0)
@@ -79,16 +79,38 @@ class BUrumorGCN(th.nn.Module):
         return x
 
 class Net(th.nn.Module):
-    def __init__(self, in_feats, hid_feats, out_feats):
+    def __init__(self, in_feats, hid_feats, out_feats, lstm_hidden_size, gru_hidden_size, lstm_num_layers=1, gru_num_layers=1):
         super(Net, self).__init__()
         self.TDrumorGCN = TDrumorGCN(in_feats, hid_feats, out_feats)
         self.BUrumorGCN = BUrumorGCN(in_feats, hid_feats, out_feats)
-        self.fc = th.nn.Linear((out_feats + hid_feats) * 2, 4)
+        
+        # LSTM用于处理TD_GCN输出
+        self.lstm = th.nn.LSTM(input_size=(out_feats + hid_feats), hidden_size=lstm_hidden_size, num_layers=lstm_num_layers, batch_first=True)
+        
+        # GRU用于处理BU_GCN输出
+        self.gru = th.nn.GRU(input_size=(out_feats + hid_feats), hidden_size=gru_hidden_size, num_layers=gru_num_layers, batch_first=True)
+        
+        # 最后的全连接层
+        self.fc = th.nn.Linear(lstm_hidden_size + gru_hidden_size, 4)
 
     def forward(self, data):
         TD_x = self.TDrumorGCN(data)
         BU_x = self.BUrumorGCN(data)
-        x = th.cat((BU_x, TD_x), 1)
+        
+        # LSTM处理TD_x
+        TD_x = TD_x.unsqueeze(0)  # 调整维度为(batch, seq_len, input_size)
+        lstm_out, (hn, cn) = self.lstm(TD_x)
+        lstm_out = lstm_out.squeeze(0)  # 去掉batch维度
+        
+        # GRU处理BU_x
+        BU_x = BU_x.unsqueeze(0)  # 调整维度为(batch, seq_len, input_size)
+        gru_out, hn = self.gru(BU_x)
+        gru_out = gru_out.squeeze(0)  # 去掉batch维度
+        
+        # 将LSTM和GRU的输出拼接起来
+        x = th.cat((lstm_out, gru_out), 1)
+        
+        # 最后的全连接层用于分类
         x = self.fc(x)
         x = F.log_softmax(x, dim=1)
         return x
@@ -100,7 +122,7 @@ batch_val_losses = []
 batch_val_accs = []
 
 def train_GCN(treeDic, x_test, x_train, TDdroprate, BUdroprate, lr, weight_decay, patience, n_epochs, batchsize, dataname, iter):
-    model = Net(5000, 64, 64).to(device)
+    model = Net(5000, 64, 64, lstm_hidden_size=128, gru_hidden_size=128).to(device)
     BU_params = list(map(id, model.BUrumorGCN.conv1.parameters()))
     BU_params += list(map(id, model.BUrumorGCN.conv2.parameters()))
     base_params = filter(lambda p: id(p) not in BU_params, model.parameters())
@@ -198,7 +220,6 @@ TDdroprate = 0.2
 BUdroprate = 0.2
 datasetname = sys.argv[1]  # "Twitter15" or "Twitter16"
 iterations = int(sys.argv[2])
-model = "GCN"
 device = th.device('cpu')
 test_accs = []
 NR_F1 = []

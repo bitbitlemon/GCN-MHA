@@ -12,17 +12,25 @@ from Process.rand5fold import *
 from tools.evaluate import *
 from torch_geometric.nn import GCNConv
 import copy
+import torch.nn as nn
 
 class TDrumorGCN(th.nn.Module):
-    def __init__(self, in_feats, hid_feats, out_feats):
+    def __init__(self, in_feats, hid_feats, out_feats, num_heads=8):
         super(TDrumorGCN, self).__init__()
         self.conv1 = GCNConv(in_feats, hid_feats)
         self.conv2 = GCNConv(hid_feats + in_feats, out_feats)
+        self.attention = nn.MultiheadAttention(embed_dim=hid_feats, num_heads=num_heads, batch_first=True)
 
     def forward(self, data):
         x, edge_index = data.x, data.edge_index
         x1 = copy.copy(x.float())
         x = self.conv1(x, edge_index)
+        
+        # 多头注意力机制
+        x = x.unsqueeze(0)  # 需要3D输入(batch, seq_len, embed_dim)
+        attn_output, _ = self.attention(x, x, x)
+        x = attn_output.squeeze(0)
+        
         x2 = copy.copy(x)
         rootindex = data.rootindex
         root_extend = th.zeros(len(data.batch), x1.size(1)).to(device)
@@ -46,17 +54,23 @@ class TDrumorGCN(th.nn.Module):
         return x
 
 class BUrumorGCN(th.nn.Module):
-    def __init__(self, in_feats, hid_feats, out_feats):
+    def __init__(self, in_feats, hid_feats, out_feats, num_heads=8):
         super(BUrumorGCN, self).__init__()
         self.conv1 = GCNConv(in_feats, hid_feats)
         self.conv2 = GCNConv(hid_feats + in_feats, out_feats)
+        self.attention = nn.MultiheadAttention(embed_dim=hid_feats, num_heads=num_heads, batch_first=True)
 
     def forward(self, data):
         x, edge_index = data.x, data.BU_edge_index
         x1 = copy.copy(x.float())
         x = self.conv1(x, edge_index)
+        
+        # 多头注意力机制
+        x = x.unsqueeze(0)  # 需要3D输入(batch, seq_len, embed_dim)
+        attn_output, _ = self.attention(x, x, x)
+        x = attn_output.squeeze(0)
+        
         x2 = copy.copy(x)
-
         rootindex = data.rootindex
         root_extend = th.zeros(len(data.batch), x1.size(1)).to(device)
         batch_size = max(data.batch) + 1
@@ -79,10 +93,10 @@ class BUrumorGCN(th.nn.Module):
         return x
 
 class Net(th.nn.Module):
-    def __init__(self, in_feats, hid_feats, out_feats):
+    def __init__(self, in_feats, hid_feats, out_feats, num_heads=8):
         super(Net, self).__init__()
-        self.TDrumorGCN = TDrumorGCN(in_feats, hid_feats, out_feats)
-        self.BUrumorGCN = BUrumorGCN(in_feats, hid_feats, out_feats)
+        self.TDrumorGCN = TDrumorGCN(in_feats, hid_feats, out_feats, num_heads)
+        self.BUrumorGCN = BUrumorGCN(in_feats, hid_feats, out_feats, num_heads)
         self.fc = th.nn.Linear((out_feats + hid_feats) * 2, 4)
 
     def forward(self, data):
@@ -189,6 +203,7 @@ def train_GCN(treeDic, x_test, x_train, TDdroprate, BUdroprate, lr, weight_decay
 
     return train_losses, val_losses, train_accs, val_accs
 
+# 设置一些超参数
 lr = 0.0005
 weight_decay = 1e-4
 patience = 10

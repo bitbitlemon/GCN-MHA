@@ -1,3 +1,4 @@
+
 import sys, os
 sys.path.append(os.getcwd())
 from Process.process import *
@@ -12,23 +13,33 @@ from Process.rand5fold import *
 from tools.evaluate import *
 from torch_geometric.nn import GCNConv
 import copy
+from tqdm import tqdm
+from tools.evaluate import evaluation4class
+import torch.nn as nn
 
 class TDrumorGCN(th.nn.Module):
-    def __init__(self, in_feats, hid_feats, out_feats):
+    def __init__(self, in_feats, hid_feats, out_feats, num_heads=8):
         super(TDrumorGCN, self).__init__()
         self.conv1 = GCNConv(in_feats, hid_feats)
         self.conv2 = GCNConv(hid_feats + in_feats, out_feats)
+        self.attention = nn.MultiheadAttention(embed_dim=hid_feats, num_heads=num_heads, batch_first=True)
 
     def forward(self, data):
         x, edge_index = data.x, data.edge_index
-        x1 = copy.copy(x.float())
+        x1 = x.float().clone()
         x = self.conv1(x, edge_index)
-        x2 = copy.copy(x)
+
+        # 多头注意力机制
+        x = x.unsqueeze(0)  # 需要3D输入 (batch, seq_len, embed_dim)
+        attn_output, _ = self.attention(x, x, x)
+        x = attn_output.squeeze(0)
+
+        x2 = x.clone()
         rootindex = data.rootindex
         root_extend = th.zeros(len(data.batch), x1.size(1)).to(device)
         batch_size = max(data.batch) + 1
         for num_batch in range(batch_size):
-            index = (th.eq(data.batch, num_batch))
+            index = (data.batch == num_batch)
             root_extend[index] = x1[rootindex[num_batch]]
         x = th.cat((x, root_extend), 1)
 
@@ -38,7 +49,7 @@ class TDrumorGCN(th.nn.Module):
         x = F.relu(x)
         root_extend = th.zeros(len(data.batch), x2.size(1)).to(device)
         for num_batch in range(batch_size):
-            index = (th.eq(data.batch, num_batch))
+            index = (data.batch == num_batch)
             root_extend[index] = x2[rootindex[num_batch]]
         x = th.cat((x, root_extend), 1)
         x = scatter_mean(x, data.batch, dim=0)
@@ -46,22 +57,28 @@ class TDrumorGCN(th.nn.Module):
         return x
 
 class BUrumorGCN(th.nn.Module):
-    def __init__(self, in_feats, hid_feats, out_feats):
+    def __init__(self, in_feats, hid_feats, out_feats, num_heads=8):
         super(BUrumorGCN, self).__init__()
         self.conv1 = GCNConv(in_feats, hid_feats)
         self.conv2 = GCNConv(hid_feats + in_feats, out_feats)
+        self.attention = nn.MultiheadAttention(embed_dim=hid_feats, num_heads=num_heads, batch_first=True)
 
     def forward(self, data):
         x, edge_index = data.x, data.BU_edge_index
-        x1 = copy.copy(x.float())
+        x1 = x.float().clone()
         x = self.conv1(x, edge_index)
-        x2 = copy.copy(x)
 
+        # 多头注意力机制
+        x = x.unsqueeze(0)  # 需要3D输入 (batch, seq_len, embed_dim)
+        attn_output, _ = self.attention(x, x, x)
+        x = attn_output.squeeze(0)
+
+        x2 = x.clone()
         rootindex = data.rootindex
         root_extend = th.zeros(len(data.batch), x1.size(1)).to(device)
         batch_size = max(data.batch) + 1
         for num_batch in range(batch_size):
-            index = (th.eq(data.batch, num_batch))
+            index = (data.batch == num_batch)
             root_extend[index] = x1[rootindex[num_batch]]
         x = th.cat((x, root_extend), 1)
 
@@ -71,7 +88,7 @@ class BUrumorGCN(th.nn.Module):
         x = F.relu(x)
         root_extend = th.zeros(len(data.batch), x2.size(1)).to(device)
         for num_batch in range(batch_size):
-            index = (th.eq(data.batch, num_batch))
+            index = (data.batch == num_batch)
             root_extend[index] = x2[rootindex[num_batch]]
         x = th.cat((x, root_extend), 1)
         x = scatter_mean(x, data.batch, dim=0)
@@ -79,10 +96,10 @@ class BUrumorGCN(th.nn.Module):
         return x
 
 class Net(th.nn.Module):
-    def __init__(self, in_feats, hid_feats, out_feats):
+    def __init__(self, in_feats, hid_feats, out_feats, num_heads=8):
         super(Net, self).__init__()
-        self.TDrumorGCN = TDrumorGCN(in_feats, hid_feats, out_feats)
-        self.BUrumorGCN = BUrumorGCN(in_feats, hid_feats, out_feats)
+        self.TDrumorGCN = TDrumorGCN(in_feats, hid_feats, out_feats, num_heads)
+        self.BUrumorGCN = BUrumorGCN(in_feats, hid_feats, out_feats, num_heads)
         self.fc = th.nn.Linear((out_feats + hid_feats) * 2, 4)
 
     def forward(self, data):
@@ -198,7 +215,6 @@ TDdroprate = 0.2
 BUdroprate = 0.2
 datasetname = sys.argv[1]  # "Twitter15" or "Twitter16"
 iterations = int(sys.argv[2])
-model = "GCN"
 device = th.device('cpu')
 test_accs = []
 NR_F1 = []

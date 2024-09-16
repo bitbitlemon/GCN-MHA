@@ -79,19 +79,34 @@ class BUrumorGCN(th.nn.Module):
         return x
 
 class Net(th.nn.Module):
-    def __init__(self, in_feats, hid_feats, out_feats):
+    def __init__(self, in_feats, hid_feats, out_feats, gru_hidden_size, gru_num_layers):
         super(Net, self).__init__()
         self.TDrumorGCN = TDrumorGCN(in_feats, hid_feats, out_feats)
         self.BUrumorGCN = BUrumorGCN(in_feats, hid_feats, out_feats)
-        self.fc = th.nn.Linear((out_feats + hid_feats) * 2, 4)
+        
+        # 添加GRU层，输入维度是GCN输出维度，隐藏维度和层数可以自定义
+        self.gru = th.nn.GRU(input_size=(out_feats + hid_feats) * 2, hidden_size=gru_hidden_size, num_layers=gru_num_layers, batch_first=True)
+        
+        # 线性层的输入现在是GRU的输出
+        self.fc = th.nn.Linear(gru_hidden_size, 4)
 
     def forward(self, data):
         TD_x = self.TDrumorGCN(data)
         BU_x = self.BUrumorGCN(data)
+        
+        # 将BU_x和TD_x拼接起来
         x = th.cat((BU_x, TD_x), 1)
+        x = x.unsqueeze(0)  # 调整维度以适应GRU输入要求 (batch, seq_len, input_size)
+        
+        # GRU处理拼接后的特征
+        x, _ = self.gru(x)
+        x = x.squeeze(0)  # 将GRU输出的序列维度去掉
+        
+        # 经过线性层并输出最终结果
         x = self.fc(x)
         x = F.log_softmax(x, dim=1)
         return x
+
 
 # 列表存储每个批次的损失和准确率
 batch_train_losses = []
@@ -100,7 +115,7 @@ batch_val_losses = []
 batch_val_accs = []
 
 def train_GCN(treeDic, x_test, x_train, TDdroprate, BUdroprate, lr, weight_decay, patience, n_epochs, batchsize, dataname, iter):
-    model = Net(5000, 64, 64).to(device)
+    model = Net(5000, 64, 64, gru_hidden_size=128, gru_num_layers=1).to(device)
     BU_params = list(map(id, model.BUrumorGCN.conv1.parameters()))
     BU_params += list(map(id, model.BUrumorGCN.conv2.parameters()))
     base_params = filter(lambda p: id(p) not in BU_params, model.parameters())

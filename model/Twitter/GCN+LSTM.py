@@ -1,3 +1,4 @@
+
 import sys, os
 sys.path.append(os.getcwd())
 from Process.process import *
@@ -12,7 +13,6 @@ from Process.rand5fold import *
 from tools.evaluate import *
 from torch_geometric.nn import GCNConv
 import copy
-
 class TDrumorGCN(th.nn.Module):
     def __init__(self, in_feats, hid_feats, out_feats):
         super(TDrumorGCN, self).__init__()
@@ -21,14 +21,14 @@ class TDrumorGCN(th.nn.Module):
 
     def forward(self, data):
         x, edge_index = data.x, data.edge_index
-        x1 = copy.copy(x.float())
+        x1 = x.float().clone()
         x = self.conv1(x, edge_index)
-        x2 = copy.copy(x)
+        x2 = x.clone()
         rootindex = data.rootindex
         root_extend = th.zeros(len(data.batch), x1.size(1)).to(device)
         batch_size = max(data.batch) + 1
         for num_batch in range(batch_size):
-            index = (th.eq(data.batch, num_batch))
+            index = (data.batch == num_batch)
             root_extend[index] = x1[rootindex[num_batch]]
         x = th.cat((x, root_extend), 1)
 
@@ -38,7 +38,7 @@ class TDrumorGCN(th.nn.Module):
         x = F.relu(x)
         root_extend = th.zeros(len(data.batch), x2.size(1)).to(device)
         for num_batch in range(batch_size):
-            index = (th.eq(data.batch, num_batch))
+            index = (data.batch == num_batch)
             root_extend[index] = x2[rootindex[num_batch]]
         x = th.cat((x, root_extend), 1)
         x = scatter_mean(x, data.batch, dim=0)
@@ -53,15 +53,15 @@ class BUrumorGCN(th.nn.Module):
 
     def forward(self, data):
         x, edge_index = data.x, data.BU_edge_index
-        x1 = copy.copy(x.float())
+        x1 = x.float().clone()
         x = self.conv1(x, edge_index)
-        x2 = copy.copy(x)
+        x2 = x.clone()
 
         rootindex = data.rootindex
         root_extend = th.zeros(len(data.batch), x1.size(1)).to(device)
         batch_size = max(data.batch) + 1
         for num_batch in range(batch_size):
-            index = (th.eq(data.batch, num_batch))
+            index = (data.batch == num_batch)
             root_extend[index] = x1[rootindex[num_batch]]
         x = th.cat((x, root_extend), 1)
 
@@ -71,7 +71,7 @@ class BUrumorGCN(th.nn.Module):
         x = F.relu(x)
         root_extend = th.zeros(len(data.batch), x2.size(1)).to(device)
         for num_batch in range(batch_size):
-            index = (th.eq(data.batch, num_batch))
+            index = (data.batch == num_batch)
             root_extend[index] = x2[rootindex[num_batch]]
         x = th.cat((x, root_extend), 1)
         x = scatter_mean(x, data.batch, dim=0)
@@ -79,17 +79,21 @@ class BUrumorGCN(th.nn.Module):
         return x
 
 class Net(th.nn.Module):
-    def __init__(self, in_feats, hid_feats, out_feats):
+    def __init__(self, in_feats, hid_feats, out_feats, lstm_hidden_size):
         super(Net, self).__init__()
         self.TDrumorGCN = TDrumorGCN(in_feats, hid_feats, out_feats)
         self.BUrumorGCN = BUrumorGCN(in_feats, hid_feats, out_feats)
-        self.fc = th.nn.Linear((out_feats + hid_feats) * 2, 4)
+        self.lstm = th.nn.LSTM(input_size=(out_feats + hid_feats) * 2, hidden_size=lstm_hidden_size, batch_first=True)
+        self.fc = th.nn.Linear(lstm_hidden_size, 4)
 
     def forward(self, data):
         TD_x = self.TDrumorGCN(data)
         BU_x = self.BUrumorGCN(data)
         x = th.cat((BU_x, TD_x), 1)
-        x = self.fc(x)
+        x = x.unsqueeze(0)  # 为LSTM添加batch维度
+        lstm_out, (hn, cn) = self.lstm(x)
+        lstm_out = lstm_out.squeeze(0)  # 去掉batch维度
+        x = self.fc(lstm_out)
         x = F.log_softmax(x, dim=1)
         return x
 
@@ -100,7 +104,7 @@ batch_val_losses = []
 batch_val_accs = []
 
 def train_GCN(treeDic, x_test, x_train, TDdroprate, BUdroprate, lr, weight_decay, patience, n_epochs, batchsize, dataname, iter):
-    model = Net(5000, 64, 64).to(device)
+    model = Net(5000, 64, 64, 128).to(device)
     BU_params = list(map(id, model.BUrumorGCN.conv1.parameters()))
     BU_params += list(map(id, model.BUrumorGCN.conv2.parameters()))
     base_params = filter(lambda p: id(p) not in BU_params, model.parameters())
@@ -179,7 +183,6 @@ def train_GCN(treeDic, x_test, x_train, TDdroprate, BUdroprate, lr, weight_decay
 
         print("Epoch {:05d} | Val_Loss {:.4f} | Val_Accuracy {:.4f}".format(epoch, np.mean(temp_val_losses), np.mean(temp_val_accs)))
 
-        # 调用 early_stopping，提供所有必需的参数
         early_stopping(np.mean(temp_val_losses), np.mean(temp_val_accs), np.mean(temp_val_F1), np.mean(temp_val_F2),
                        np.mean(temp_val_F3), np.mean(temp_val_F4), model, 'BiGCN', dataname)
 
@@ -188,6 +191,7 @@ def train_GCN(treeDic, x_test, x_train, TDdroprate, BUdroprate, lr, weight_decay
             break
 
     return train_losses, val_losses, train_accs, val_accs
+
 
 lr = 0.0005
 weight_decay = 1e-4
