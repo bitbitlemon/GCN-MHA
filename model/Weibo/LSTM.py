@@ -72,19 +72,22 @@ class BUrumorGCN(th.nn.Module):
         x = th.cat((x,root_extend), 1)
         x= scatter_mean(x, data.batch, dim=0)
         return x
-
 class Net(th.nn.Module):
-    def __init__(self,in_feats,hid_feats,out_feats):
+    def __init__(self, in_feats, hid_feats, out_feats):
         super(Net, self).__init__()
         self.TDrumorGCN = TDrumorGCN(in_feats, hid_feats, out_feats)
         self.BUrumorGCN = BUrumorGCN(in_feats, hid_feats, out_feats)
-        self.fc=th.nn.Linear((out_feats+hid_feats)*2,2)
+        self.lstm = th.nn.LSTM((out_feats + hid_feats) * 2, 128, batch_first=True)
+        self.fc = th.nn.Linear(128, 2)
 
     def forward(self, data):
         TD_x = self.TDrumorGCN(data)
         BU_x = self.BUrumorGCN(data)
-        x = th.cat((BU_x,TD_x), 1)
-        x=self.fc(x)
+        x = th.cat((BU_x, TD_x), 1)
+        x = x.unsqueeze(1)  # Adding a time step dimension for LSTM
+        lstm_out, _ = self.lstm(x)
+        lstm_out = lstm_out[:, -1, :]  # Use the output from the last time step
+        x = self.fc(lstm_out)
         x = F.log_softmax(x, dim=1)
         return x
 
